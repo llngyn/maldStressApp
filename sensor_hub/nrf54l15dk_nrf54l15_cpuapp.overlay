@@ -1,0 +1,131 @@
+// Device Tree Overlay File
+// Defines all of the hardware nodes and configurations
+
+&i2c22 {
+    status = "okay";
+    pinctrl-0 = <&i2c22_default>;
+	pinctrl-1 = <&i2c22_sleep>;
+    pinctrl-names = "default", "sleep";
+	clock-frequency = <I2C_BITRATE_STANDARD>; 
+    adxl345: adxl345@53{
+        compatible = "adi,adxl345";
+        status = "okay";
+        reg = < 0x53 >;
+    };
+    veml7700: veml7700@10{
+        compatible = "vishay,veml7700";
+        status = "okay";
+        reg = < 0x10 >;
+    };
+	max30102: max30102@57{
+		compatible = "maxim,max30101";
+		status = "okay";
+		reg = <0x57>;
+	};
+// 	// PMIC
+// 	npm1304: npm1304@6b{
+// 		compatible="nordic,npm1304";
+// 		reg=<0x6b>;
+// 		status="disabled"; // will have to set to "okay" later
+
+// 		/* Interrupt for Fuel Gauge / Buttons */
+//         host-int-gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
+
+// 		regulators {
+// 			compatible="nordic,npm1304-regulator";
+
+// 			/* BUCK1: 1.8V */
+//             BUCK1 {
+//                 regulator-min-microvolt = <1800000>;
+//                 regulator-max-microvolt = <1800000>;
+//                 regulator-always-on;
+//             };
+
+//             /* BUCK2: 3.3V (System Boot) */
+//             BUCK2 {
+//                 regulator-min-microvolt = <3300000>;
+//                 regulator-max-microvolt = <3300000>;
+//                 regulator-boot-on; 
+//                 regulator-always-on;
+//             };
+
+//             /* LDO2: 3.3V (Analog) */
+//             LDO2 {
+//                 regulator-min-microvolt = <3300000>;
+//                 regulator-max-microvolt = <3300000>;
+//                 regulator-always-on;
+//             };
+//         };
+
+//         npm1304_charger: charger {
+//             compatible = "nordic,npm1304-charger";
+//             term-microvolt = <4200000>;
+//             current-microamp = <100000>;
+		
+//             dischg-limit-microamp = <125000>; /* 1A Discharge Limit */
+//             vbus-limit-microamp = <500000>;    /* 500mA USB Input Limit */
+//             thermistor-ohms = <10000>;         /* 10k NTC Thermistor */
+//             thermistor-beta = <3380>;          /* Standard Beta Value */
+//         };
+
+//         npm1304_leds: leds {
+//             compatible = "nordic,npm1304-led";
+// 			nordic,led0-mode = "charging";
+// 			nordic,led1-mode = "host";
+// 			nordic,led2-mode = "host";
+//         };
+// 	};	
+};
+
+&spi21 {
+	status = "okay";
+	pinctrl-0 = <&spi21_default>;
+	pinctrl-1 = <&spi21_sleep>;
+	pinctrl-names = "default", "sleep";
+	
+	/* Chip Select: P1.09 (Active Low) */
+	cs-gpios = <&gpio1 9 GPIO_ACTIVE_LOW>;
+
+	/* ADC Device (MCP3201 for Dev Board) */
+	mcp3201: mcp3201@0 {
+		compatible = "mcp3201";
+		reg = <0>; 
+		spi-max-frequency = <1600000>; 
+		label = "MCP3201";
+	};
+};
+
+&pinctrl {
+	/omit-if-no-ref/ i2c22_default: i2c22_default {
+		group1  {
+			psels = <NRF_PSEL(TWIM_SCL, 1, 11)>,
+					<NRF_PSEL(TWIM_SDA, 1, 12)>;
+		};
+	};
+
+	/omit-if-no-ref/ i2c22_sleep: i2c22_sleep {
+		group1  {
+			psels = <NRF_PSEL(TWIM_SCL, 1, 11)>,
+					<NRF_PSEL(TWIM_SDA, 1, 12)>;
+			low-power-enable;
+		};
+	};
+
+    /omit-if-no-ref/ spi21_default: spi21_default {
+		group1 {
+			/* SCK = P1.08, MISO = P1.14, MOSI = P1.13 */
+			psels = <NRF_PSEL(SPIM_SCK, 1, 8)>,
+				<NRF_PSEL(SPIM_MISO, 1, 14)>,
+				<NRF_PSEL(SPIM_MOSI, 1, 13)>; 
+		};
+	};
+
+	/omit-if-no-ref/ spi21_sleep: spi21_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 1, 8)>,
+				<NRF_PSEL(SPIM_MISO, 1, 14)>,
+				<NRF_PSEL(SPIM_MOSI, 1, 13)>;
+			low-power-enable;
+		};
+	};
+};
