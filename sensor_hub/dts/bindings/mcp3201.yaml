@@ -1,0 +1,12 @@
+# This file tells Zephyr that "mcp3201" is a valid SPI slave
+description: Generic SPI Device for raw access
+
+compatible: "mcp3201"
+
+# Inherit all standard SPI properties (frequency, duplex, etc.)
+include: spi-device.yaml
+
+properties:
+    label:
+      type: string
+      description: Human readable name
