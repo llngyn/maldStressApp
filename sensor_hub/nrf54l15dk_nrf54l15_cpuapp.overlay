@@ -29,7 +29,7 @@
 // 		status="disabled"; // will have to set to "okay" later
 
 // 		/* Interrupt for Fuel Gauge / Buttons */
-//         host-int-gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
+//      host-int-gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
 
 // 		regulators {
 // 			compatible="nordic,npm1304-regulator";
@@ -100,6 +100,7 @@
 		group1  {
 			psels = <NRF_PSEL(TWIM_SCL, 1, 11)>,
 					<NRF_PSEL(TWIM_SDA, 1, 12)>;
+			// bias-disable; // <-- include for custom board
 		};
 	};
 
@@ -108,6 +109,7 @@
 			psels = <NRF_PSEL(TWIM_SCL, 1, 11)>,
 					<NRF_PSEL(TWIM_SDA, 1, 12)>;
 			low-power-enable;
+			// bias-disable; // <-- include for custom board
 		};
 	};
 
