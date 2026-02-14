@@ -1,15 +1,24 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <soc.h>
 #include <zephyr/drivers/sensor.h>
 //#include <zephyr/drivers/led.h> // for PMIC LEDs
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/settings/settings.h>
 #include <math.h>
 #include <stdio.h>
 
 #include <zephyr/drivers/sensor/adxl345.h>
 #include <zephyr/drivers/sensor/veml7700.h>
 #include <zephyr/drivers/sensor/max30101.h>
+
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/hci.h>
+#include <bluetooth/services/nus.h>
 
 #include "hr_calc.h"
 #include "eda_calc.h"
@@ -18,6 +27,8 @@
 #define MOTION_THRESHOLD 1.0 
 #define PPG_ADDR 0x57
 #define PPG_DATA_DUMP 0
+#define DEVICE_NAME CONFIG_BT_DEVICE_NAME
+#define DEVICE_NAME_LEN	(sizeof(DEVICE_NAME) - 1)
 
 LOG_MODULE_REGISTER(SensorHub, LOG_LEVEL_INF);
 
@@ -37,6 +48,19 @@ const struct spi_dt_spec eda_dev = SPI_DT_SPEC_GET(DT_NODELABEL(mcp3201), SPI_OP
 hr_context_t hr_ctx;
 eda_context_t eda_ctx;
 
+// structs for ble
+static struct bt_conn *current_conn;
+static struct bt_conn *auth_conn;
+static struct k_work adv_work;
+static K_SEM_DEFINE(ble_init_ok, 0, 1);
+static const struct bt_data ad[] = {
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+};
+static const struct bt_data sd[] = {
+	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_NUS_VAL),
+};
+
 // *****HELPER FUNCTIONS PROTOTYPES*****
 void scan_i2c_bus(const struct device *dev);
 int configure_acc(void);
@@ -45,6 +69,17 @@ int configure_ppg(void);
 // PMIC functions, uncomment later
 // int32_t read_battery(void); 
 // void update_pmic_status(void);
+// for bluetooth
+static void adv_work_handler(struct k_work *work);
+static void advertising_start(void);
+static void connected(struct bt_conn *conn, uint8_t err);
+static void disconnected(struct bt_conn *conn, uint8_t reason);
+static void recycled_cb(void);
+BT_CONN_CB_DEFINE(conn_callbacks) = {
+	.connected        = connected,
+	.disconnected     = disconnected,
+	.recycled         = recycled_cb,
+};
 
 int main(void)
 {
@@ -111,6 +146,25 @@ int main(void)
         uint8_t fifo_data[6]; // 3 bytes for RED, 3 bytes for IR LED
         uint32_t ir_val=-1;
         float current_temp_c = 0.0f;
+
+        // BLE CONFIGURATION
+	config_err = bt_enable(NULL);
+	if (config_err) {
+		LOG_ERR("Failed to initialize BT (err: %d)", config_err);
+	}
+	LOG_INF("Bluetooth initialized");
+        k_sem_give(&ble_init_ok);
+	if (IS_ENABLED(CONFIG_SETTINGS)) {
+		settings_load();
+	}
+	config_err = bt_nus_init(NULL);
+	if (config_err) {
+		LOG_ERR("Failed to initialize UART service (err: %d)", config_err);
+		return 0;
+	}
+        // start advertising for ble connection
+        k_work_init(&adv_work, adv_work_handler);
+	advertising_start();
 
         // // set battery status LEDs
         // if (!device_is_ready(pmic_leds)) {
@@ -320,11 +374,23 @@ int main(void)
                 if (indoors)      current_packet.status_flags |= STATUS_BIT_INDOOR;
                 if (eda_ctx.stress_detected) current_packet.status_flags |= STATUS_BIT_STRESS_EDA;
                 if (hr_ctx.stress_from_hrv)  current_packet.status_flags |= STATUS_BIT_STRESS_HRV;
-                // *** place bluetooth call her later ***
+
+                // *** transmit data via ble every 4 sec ***
+                if (loop%100==0){
+                        // send data via BLE with NUS
+                        if (current_conn) {
+                                int ret = bt_nus_send(current_conn, (uint8_t *)&current_packet, sizeof(current_packet));
+                                LOG_INF("Data Sent: Success.");
+                                LOG_INF("timestamp: %x. status: %x.", current_packet.timestamp, current_packet.status_flags);
+                                if (ret < 0) {
+                                        LOG_ERR("Failed to send data (err %d)", ret);
+                                }
+                        }
+                }
 
                 #if !PPG_DATA_DUMP
                 // print sensor status data every 4 sec
-                if (loop==75){
+                if (loop%100==0){
                         LOG_INF("\n**PRINTING DEVICE READINGS**");
                         LOG_INF("Current HR: %d bpm", curr_bpm);
                         LOG_INF("Temperature: %.2f C", (double)current_temp_c);
@@ -338,7 +404,6 @@ int main(void)
                         } else {
                                 LOG_INF("Currently Outdoors.");
                         }
-                        loop=0;
                         LOG_INF("\nCollecting New Device Data...");
                 }
                 #else
@@ -385,6 +450,55 @@ void scan_i2c_bus(const struct device *dev)
     } else {
         LOG_INF("I2C Scan Complete.");
     }
+}
+
+// configure bluetooth helpers
+static void adv_work_handler(struct k_work *work)
+{
+	int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+	if (err) {
+		LOG_ERR("Advertising failed to start (err %d)", err);
+		return;
+	}
+	LOG_INF("Advertising successfully started");
+}
+
+static void advertising_start(void)
+{
+	k_work_submit(&adv_work);
+}
+
+static void connected(struct bt_conn *conn, uint8_t err)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+	if (err) {
+		LOG_ERR("Connection failed, err 0x%02x %s", err, bt_hci_err_to_str(err));
+		return;
+	}
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+	LOG_INF("Connected %s", addr);
+	current_conn = bt_conn_ref(conn);
+}
+
+static void disconnected(struct bt_conn *conn, uint8_t reason)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+	LOG_INF("Disconnected: %s, reason 0x%02x %s", addr, reason, bt_hci_err_to_str(reason));
+	if (auth_conn) {
+		bt_conn_unref(auth_conn);
+		auth_conn = NULL;
+	}
+	if (current_conn) {
+		bt_conn_unref(current_conn);
+		current_conn = NULL;
+	}
+}
+
+static void recycled_cb(void)
+{
+	LOG_INF("Connection object available from previous conn. Disconnect is complete!");
+	advertising_start();
 }
 
 // configue accelerometer helper
